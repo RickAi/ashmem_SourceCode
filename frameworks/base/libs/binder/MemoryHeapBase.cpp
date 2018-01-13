@@ -40,9 +40,9 @@ namespace android {
 
 // ---------------------------------------------------------------------------
 
-MemoryHeapBase::MemoryHeapBase() 
+MemoryHeapBase::MemoryHeapBase()
     : mFD(-1), mSize(0), mBase(MAP_FAILED),
-      mDevice(NULL), mNeedUnmap(false) 
+      mDevice(NULL), mNeedUnmap(false)
 {
 }
 
@@ -52,10 +52,13 @@ MemoryHeapBase::MemoryHeapBase(size_t size, uint32_t flags, char const * name)
 {
     const size_t pagesize = getpagesize();
     size = ((size + pagesize-1) & ~(pagesize-1));
+    // 创建一个匿名共享内存，返回文件描述符
     int fd = ashmem_create_region(name == NULL ? "MemoryHeapBase" : name, size);
     LOGE_IF(fd<0, "error creating ashmem region: %s", strerror(errno));
     if (fd >= 0) {
+        // 将创建的匿名共享内存块映射到进程的地址空间
         if (mapfd(fd, size) == NO_ERROR) {
+            // 检查内存块是否只读
             if (flags & READ_ONLY) {
                 ashmem_set_prot_region(fd, PROT_READ);
             }
@@ -134,6 +137,7 @@ status_t MemoryHeapBase::mapfd(int fd, size_t size, uint32_t offset)
         }
         //LOGD("mmap(fd=%d, base=%p, size=%lu)", fd, base, size);
         mBase = base;
+        // 服务结束后，撤销内存映射
         mNeedUnmap = true;
     } else  {
         mBase = 0; // not MAP_FAILED

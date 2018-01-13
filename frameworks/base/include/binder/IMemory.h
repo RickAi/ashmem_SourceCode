@@ -39,9 +39,13 @@ public:
         READ_ONLY   = 0x00000001
     };
 
+    // 获取匿名共享内存块的文件描述符
     virtual int         getHeapID() const = 0;
+    // 获取映射地址
     virtual void*       getBase() const = 0;
+    // 获取内存大小
     virtual size_t      getSize() const = 0;
+    // 获取访问保护位
     virtual uint32_t    getFlags() const = 0;
 
     // these are there just for backward source compatibility
@@ -53,12 +57,12 @@ public:
 class BnMemoryHeap : public BnInterface<IMemoryHeap>
 {
 public:
-    virtual status_t onTransact( 
+    virtual status_t onTransact(
             uint32_t code,
             const Parcel& data,
             Parcel* reply,
             uint32_t flags = 0);
-    
+
     BnMemoryHeap();
 protected:
     virtual ~BnMemoryHeap();

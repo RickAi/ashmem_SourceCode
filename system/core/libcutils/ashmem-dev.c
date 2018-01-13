@@ -43,6 +43,7 @@ int ashmem_create_region(const char *name, size_t size)
 {
 	int fd, ret;
 
+	// 打开设备文件
 	fd = open(ASHMEM_DEVICE, O_RDWR);
 	if (fd < 0)
 		return fd;
@@ -56,6 +57,7 @@ int ashmem_create_region(const char *name, size_t size)
 			goto error;
 	}
 
+	// 使用IO控制命令来设置匿名共享内存的大小
 	ret = ioctl(fd, ASHMEM_SET_SIZE, size);
 	if (ret < 0)
 		goto error;
@@ -67,17 +69,20 @@ error:
 	return ret;
 }
 
+// 修改共享内存访问保护位
 int ashmem_set_prot_region(int fd, int prot)
 {
 	return ioctl(fd, ASHMEM_SET_PROT_MASK, prot);
 }
 
+// 锁定一块共享内存
 int ashmem_pin_region(int fd, size_t offset, size_t len)
 {
 	struct ashmem_pin pin = { offset, len };
 	return ioctl(fd, ASHMEM_PIN, &pin);
 }
 
+// 解锁一处共享内存
 int ashmem_unpin_region(int fd, size_t offset, size_t len)
 {
 	struct ashmem_pin pin = { offset, len };

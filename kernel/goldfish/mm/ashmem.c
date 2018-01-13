@@ -131,15 +131,18 @@ static int range_alloc(struct ashmem_area *asma,
 {
 	struct ashmem_range *range;
 
+	// 从slab缓冲区中分配一个ashmem_range结构体
 	range = kmem_cache_zalloc(ashmem_range_cachep, GFP_KERNEL);
 	if (unlikely(!range))
 		return -ENOMEM;
 
+	// 初始化range
 	range->asma = asma;
 	range->pgstart = start;
 	range->pgend = end;
 	range->purged = purged;
 
+	// 将它插入到unpinned_list中
 	list_add_tail(&range->unpinned, &prev_range->unpinned);
 
 	if (range_on_lru(range))
@@ -150,8 +153,10 @@ static int range_alloc(struct ashmem_area *asma,
 
 static void range_del(struct ashmem_range *range)
 {
+	// 从unpinned_list中删除
 	list_del(&range->unpinned);
 	if (range_on_lru(range))
+		// 将处于解锁状态的内存块range从全局列表ashmem_lru_list中删除
 		lru_del(range);
 	kmem_cache_free(ashmem_range_cachep, range);
 }
@@ -178,14 +183,17 @@ static int ashmem_open(struct inode *inode, struct file *file)
 	struct ashmem_area *asma;
 	int ret;
 
+	// 设置/dev/ashmem为不可随机访问
 	ret = nonseekable_open(inode, file);
 	if (unlikely(ret))
 		return ret;
 
+	// 从slab缓冲区中分配一个ashmem_area结构体
 	asma = kmem_cache_zalloc(ashmem_area_cachep, GFP_KERNEL);
 	if (unlikely(!asma))
 		return -ENOMEM;
 
+	// 初始化ashmem_area中的unpinned_list, name, 访问保护位
 	INIT_LIST_HEAD(&asma->unpinned_list);
 	memcpy(asma->name, ASHMEM_NAME_PREFIX, ASHMEM_NAME_PREFIX_LEN);
 	asma->prot_mask = PROT_MASK;
@@ -230,6 +238,7 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 		goto out;
 	}
 
+	// 临时文件是否已经被创建
 	if (!asma->file) {
 		char *name = ASHMEM_NAME_DEF;
 		struct file *vmfile;
@@ -252,7 +261,7 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 		printk(KERN_INFO "shyluo@gmail.com: vma->vm_ops == NULL");
         /****************************************************************/
 
-
+	// 如果允许在不同的进程之间分享，则设置它的映射文件
 	if (vma->vm_flags & VM_SHARED)
 		shmem_set_file(vma, asma->file);
 	else {
@@ -287,17 +296,20 @@ static int ashmem_shrink(int nr_to_scan, gfp_t gfp_mask)
 	struct ashmem_range *range, *next;
 
 	/* We might recurse into filesystem code, so bail out if necessary */
+	// 需要回收的页数
 	if (nr_to_scan && !(gfp_mask & __GFP_FS))
 		return -1;
 	if (!nr_to_scan)
 		return lru_count;
 
 	mutex_lock(&ashmem_mutex);
+	// 遍历全局列表中的解锁内存块
 	list_for_each_entry_safe(range, next, &ashmem_lru_list, lru) {
 		struct inode *inode = range->asma->file->f_dentry->d_inode;
 		loff_t start = range->pgstart * PAGE_SIZE;
 		loff_t end = (range->pgend + 1) * PAGE_SIZE - 1;
 
+		// 回收物理页面
 		vmtruncate_range(inode, start, end);
 		range->purged = ASHMEM_WAS_PURGED;
 		lru_del(range);
@@ -345,6 +357,7 @@ static int set_name(struct ashmem_area *asma, void __user *name)
 
 	mutex_lock(&ashmem_mutex);
 
+	// 一块共享匿名内存如果已经创建了临时文件，应用程序将不能再修改它的名字
 	/* cannot change an existing mapping's name */
 	if (unlikely(asma->file)) {
 		ret = -EINVAL;
@@ -423,18 +436,22 @@ static int ashmem_pin(struct ashmem_area *asma, size_t pgstart, size_t pgend)
 			ret |= range->purged;
 
 			/* Case #1: Easy. Just nuke the whole thing. */
+			// 指定要锁定的内存块包含了处于解锁状态的内存块，直接从unpiinned_list中删除即可
 			if (page_range_subsumes_range(range, pgstart, pgend)) {
 				range_del(range);
 				continue;
 			}
 
 			/* Case #2: We overlap from the start, so adjust it */
+			// 指定要锁定的内存块后半部分与range的前半部分相并
+			// 需要将处于解锁状态的内存range的开始地址修改为指定要锁定的内存的末尾地址即可
 			if (range->pgstart >= pgstart) {
 				range_shrink(range, pgend + 1, range->pgend);
 				continue;
 			}
 
 			/* Case #3: We overlap from the rear, so adjust it */
+			// 指定要锁定的内存块range的前半部分与处于解锁状态的range的后半部分相并
 			if (range->pgend <= pgend) {
 				range_shrink(range, range->pgstart, pgstart-1);
 				continue;
@@ -445,6 +462,7 @@ static int ashmem_pin(struct ashmem_area *asma, size_t pgstart, size_t pgend)
 			 * more complicated, we allocate a new range for the
 			 * second half and adjust the first chunk's endpoint.
 			 */
+			 // 处于解锁状态列表中的range包含着指定要为加锁状态的块
 			range_alloc(asma, range, range->purged,
 				    pgend + 1, range->pgend);
 			range_shrink(range, range->pgstart, pgstart - 1);
@@ -466,6 +484,8 @@ static int ashmem_unpin(struct ashmem_area *asma, size_t pgstart, size_t pgend)
 	unsigned int purged = ASHMEM_NOT_PURGED;
 
 restart:
+	// 遍历每一块处于解锁状态的内存，如果发现已解锁的内存块range和即将要解锁的内存块存在相交
+	// 那么就对它们执行合并操作
 	list_for_each_entry_safe(range, next, &asma->unpinned_list, unpinned) {
 		/* short circuit: this is our insertion point */
 		if (range_before_page(range, pgstart))
@@ -520,6 +540,7 @@ static int ashmem_pin_unpin(struct ashmem_area *asma, unsigned long cmd,
 	size_t pgstart, pgend;
 	int ret = -EINVAL;
 
+	// 是否创建了临时文件
 	if (unlikely(!asma->file))
 		return -EINVAL;
 
@@ -527,12 +548,15 @@ static int ashmem_pin_unpin(struct ashmem_area *asma, unsigned long cmd,
 		return -EFAULT;
 
 	/* per custom, you can pass zero for len to mean "everything onward" */
+	// 检查内存块大小是否为0
 	if (!pin.len)
 		pin.len = PAGE_ALIGN(asma->size) - pin.offset;
 
+	// 内存块的偏移地址和大小是否对齐到页面边界
 	if (unlikely((pin.offset | pin.len) & ~PAGE_MASK))
 		return -EINVAL;
 
+	// 内存块末尾地址是否超出匿名共享内存asma的末尾地址
 	if (unlikely(((__u32) -1) - pin.offset < pin.len))
 		return -EINVAL;
 
@@ -567,6 +591,7 @@ static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	long ret = -ENOTTY;
 
 	switch (cmd) {
+	// 共享内存文件名的设置与获取
 	case ASHMEM_SET_NAME:
 		ret = set_name(asma, (void __user *) arg);
 		break;
@@ -589,6 +614,7 @@ static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case ASHMEM_GET_PROT_MASK:
 		ret = asma->prot_mask;
 		break;
+	// 匿名共享内存的锁定与解锁
 	case ASHMEM_PIN:
 	case ASHMEM_UNPIN:
 	case ASHMEM_GET_PIN_STATUS:
@@ -610,6 +636,8 @@ static struct file_operations ashmem_fops = {
 	.owner = THIS_MODULE,
 	.open = ashmem_open,
 	.release = ashmem_release,
+	// ashmem的访问方式是直接地址访问，即先映射进程的地址空间，然后通过虚拟地址来直接访问
+	// 所有没有对应的读写函数
 	.mmap = ashmem_mmap,
 	.unlocked_ioctl = ashmem_ioctl,
 	.compat_ioctl = ashmem_ioctl,
@@ -625,6 +653,7 @@ static int __init ashmem_init(void)
 {
 	int ret;
 
+	// 创建slab缓冲区分配器，用来分配ashmem_area结构体
 	ashmem_area_cachep = kmem_cache_create("ashmem_area_cache",
 					  sizeof(struct ashmem_area),
 					  0, 0, NULL);
@@ -633,6 +662,7 @@ static int __init ashmem_init(void)
 		return -ENOMEM;
 	}
 
+	// 创建slab缓冲区分配器，用来分配ashmem_range结构体
 	ashmem_range_cachep = kmem_cache_create("ashmem_range_cache",
 					  sizeof(struct ashmem_range),
 					  0, 0, NULL);
@@ -641,12 +671,15 @@ static int __init ashmem_init(void)
 		return -ENOMEM;
 	}
 
+	// 注册一个匿名共享内存设备
 	ret = misc_register(&ashmem_misc);
 	if (unlikely(ret)) {
 		printk(KERN_ERR "ashmem: failed to register misc device!\n");
 		return ret;
 	}
 
+	// 注册一个内存回收函数
+	// 当系统内存不足时，将会通过一个页框回收算法来回收内存
 	register_shrinker(&ashmem_shrinker);
 
 	printk(KERN_INFO "ashmem: initialized\n");
